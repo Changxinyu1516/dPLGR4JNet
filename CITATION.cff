@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use dPLGR4JNet in your research, please cite the software and the associated thesis or paper."
+title: "dPLGR4JNet"
+type: software
+version: 0.1.0
+date-released: 2026-04-05
+authors:
+  - family-names: "Chang"
+    given-names: "Xinyu"
+  - family-names: "Guo"
+    given-names: "Jun"
+license: "BSD-3-Clause"
+abstract: "Standalone differentiable GR4J software with an LSTM parameter generator and MLP calibration layer for SXdata experiments."

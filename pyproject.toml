@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dPLGR4JNet"
+version = "0.1.0"
+description = "Standalone differentiable GR4J software adapted from torchhydro for SXdata experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [
+  { name = "Xinyu Chang" },
+  { name = "Jun Guo" },
+]
+dependencies = [
+  "torch",
+  "pandas",
+  "numpy",
+  "openpyxl",
+  "PyYAML",
+]
+classifiers = [
+  "License :: OSI Approved :: BSD License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering :: Hydrology",
+]
+
+[project.scripts]
+dplgr4jnet = "dplgr4jnet.cli:main"
+
+[tool.setuptools]
+packages = ["dplgr4jnet"]
+license-files = ["LICENSE", "LICENSES/*.txt"]

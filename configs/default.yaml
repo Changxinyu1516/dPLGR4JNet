@@ -1,0 +1,45 @@
+experiment:
+  name: dplgr4jnet_sx
+  seed: 42
+  output_dir: outputs/dplgr4jnet_sx
+
+data:
+  data_dir: ${DPLGR4JNET_DATA_DIR}
+  station_name: 鍏村北
+  basin_name: 鍏村北浠ヤ笅
+  runoff_name: 鍏村北
+  train_period: [2010-01-01, 2020-12-31]
+  valid_period: [2021-01-01, 2022-12-31]
+  test_period: [2023-01-01, 2024-12-31]
+  feature_columns:
+    - precipitation
+    - evapotranspiration
+    - temperature_mean
+    - relative_humidity
+    - solar_radiation
+  target_column: streamflow
+  sequence_length: 180
+  warmup_length: 0
+  window_stride: 1
+
+model:
+  hidden_size: 16
+  dropout: 0.2
+  param_limit_func: clamp
+  calibration_hidden_size: 64
+  calibration_dropout: 0.4
+
+training:
+  epochs: 10
+  batch_size: 32
+  learning_rate: 0.001
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 8
+  early_stopping_patience: 8
+  num_workers: 0
+  device: auto
+
+evaluation:
+  save_excel: true
