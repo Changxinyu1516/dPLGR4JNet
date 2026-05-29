@@ -2,6 +2,8 @@
 
 `dPLGR4JNet` is a standalone Python implementation of a differentiable GR4J workflow for rainfall-runoff modeling on the `SXdata` dataset.
 
+This repository adapts and refactors ideas and code paths from the `torchhydro` project, especially the `dpl_gr4j_cxy.py` example script and the `DplLstmGr4jWithMLP` model family. It is packaged here as a smaller, self-contained research codebase that does not depend on `torchhydro` or `hydrodataset` at runtime.
+
 ## Key Features
 
 - Uses an LSTM to generate GR4J parameters.
@@ -10,9 +12,11 @@
 - Trains directly on the `SXdata` Excel files after local configuration.
 - Exports predictions, metrics, and GR4J parameters after evaluation.
 
-## License And Notices
+## Provenance And Licensing
 
-See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for license and attribution details.
+- This project contains original work by Xinyu Chang and Jun Guo.
+- Portions are adapted from the BSD-licensed `torchhydro` project by Wenyu Ouyang and contributors.
+- See [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and [LICENSES/torchhydro-BSD-3-Clause.txt](LICENSES/torchhydro-BSD-3-Clause.txt).
 
 ## Repository Layout
 
@@ -129,3 +133,10 @@ Typical artifacts include:
 
 - Citation metadata for GitHub is provided in `CITATION.cff`.
 - A manuscript-ready software availability template is provided in `docs/software-availability.md`.
+
+## Public Release Status
+
+This repository has been prepared for public release, but two items still require author action before thesis or journal submission:
+
+- Replace placeholder public contact details and final repository URLs.
+- Confirm the legal redistribution status of `SXdata` and keep the data availability statement consistent with that status.
