@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dPLGR4JNet"
-version = "0.1.0"
-description = "Standalone differentiable GR4J software adapted from torchhydro for SXdata experiments"
+version = "0.2.0"
+description = "Standalone static and dynamic differentiable GR4J model family"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }

@@ -5,17 +5,17 @@ import json
 from pathlib import Path
 from typing import Any
 
-from dplgr4jnet.config import load_config, save_config
+from dplgr4jnet.config import load_config, save_config, validate_config
 from dplgr4jnet.trainer import run_experiment
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train and evaluate the standalone dPLGR4JNet model.")
+    parser = argparse.ArgumentParser(description="Train and evaluate dPLGR4J model variants.")
     parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML config.")
     parser.add_argument("--data-dir", help="Override data.data_dir in config or via environment.")
     parser.add_argument("--station-name", help="Override station_name in config.")
-    parser.add_argument("--basin-name", help="Override basin_name in config.")
-    parser.add_argument("--runoff-name", help="Override runoff_name in config.")
+    parser.add_argument("--model", choices=["dPLGR4J", "dPLGR4JNet", "dPLGR4Jd", "dPLGR4JNetd"], help="Model variant.")
+    parser.add_argument("--pretrained-dpl-path", help="Required base checkpoint for dPLGR4JNet/dPLGR4JNetd.")
     parser.add_argument("--output-dir", help="Override experiment.output_dir in config.")
     parser.add_argument("--epochs", type=int, help="Override training.epochs in config.")
     parser.add_argument("--device", help="Override training.device in config.")
@@ -28,10 +28,11 @@ def apply_overrides(cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, 
         cfg["data"]["data_dir"] = args.data_dir
     if args.station_name:
         cfg["data"]["station_name"] = args.station_name
-    if args.basin_name:
-        cfg["data"]["basin_name"] = args.basin_name
-    if args.runoff_name:
-        cfg["data"]["runoff_name"] = args.runoff_name
+        cfg["data"]["file"] = None
+    if args.model:
+        cfg["model"]["name"] = args.model
+    if args.pretrained_dpl_path:
+        cfg["model"]["pretrained_dpl_path"] = args.pretrained_dpl_path
     if args.output_dir:
         cfg["experiment"]["output_dir"] = args.output_dir
     if args.epochs is not None:
@@ -47,6 +48,7 @@ def main() -> None:
 
     cfg = load_config(args.config)
     cfg = apply_overrides(cfg, args)
+    validate_config(cfg)
 
     output_dir = Path(cfg["experiment"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -9,74 +9,77 @@ import yaml
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "experiment": {
-        "name": "dplgr4jnet_sx",
-        "seed": 42,
-        "output_dir": "outputs/dplgr4jnet_sx",
-    },
+    "experiment": {"name": "dplgr4j_sample", "seed": 42, "output_dir": "outputs/dplgr4j_sample"},
     "data": {
-        "data_dir": "${DPLGR4JNET_DATA_DIR}",
-        "station_name": "兴山",
-        "basin_name": "兴山以上",
-        "runoff_name": "兴山以上",
-        "train_period": ["2010-01-01", "2020-12-31"],
-        "valid_period": ["2021-01-01", "2022-12-31"],
-        "test_period": ["2023-01-01", "2024-12-31"],
-        "feature_columns": [
-            "precipitation",
-            "evapotranspiration",
-            "temperature_mean",
-            "relative_humidity",
-            "solar_radiation",
-        ],
-        "target_column": "streamflow",
-        "sequence_length": 180,
-        "warmup_length": 0,
-        "window_stride": 1,
+        "data_dir": "data",
+        "file": None,
+        "station_name": "01013500",
+        "date_column": "Time",
+        "target_column": "runoff",
+        "runoff_unit": "m3/s",
+        "topo_file": "camels_topo.txt",
+        "topo_gauge_column": "gauge_id",
+        "area_column": "area_gages2",
+        "area_km2": None,
+        "train_period": ["1980-01-01", "2006-12-31"],
+        "valid_period": ["2007-01-01", "2014-12-31"],
+        "test_period": None,
+        "feature_columns": ["PRECIP", "PET_Pristley-Taylor(mm)", "srad(W/m2)", "tmax(C)", "tmin(C)", "vp(Pa)"],
+        "sequence_length": 365,
+        "warmup_length": 30,
+        "window_stride": 365,
     },
     "model": {
+        "name": "dPLGR4J",
         "hidden_size": 16,
-        "dropout": 0.2,
-        "param_limit_func": "clamp",
-        "calibration_hidden_size": 64,
-        "calibration_dropout": 0.4,
+        "dropout": 0.0,
+        "param_limit_func": "sigmoid",
+        "param_test_way": "mean_time",
+        "param_var_index": [0],
+        "param_smoothness_weight": 0.01,
+        "n_dynamic_features": None,
+        "calibration_hidden_dim": [64, 32],
+        "calibration_dropout": 0.05,
+        "calibration_history_length": 3,
+        "enforce_nonnegative": True,
+        "zero_init_mlp": True,
+        "transform_physical_features": True,
+        "pretrained_dpl_path": None,
+        "preserve_pretrained_baseline": True,
+        "dpl_anchor_weight": 0.0,
+        "correction_penalty_weight": 0.0,
     },
     "training": {
         "epochs": 10,
-        "batch_size": 32,
-        "learning_rate": 1e-3,
+        "batch_size": 16,
+        "learning_rate": 0.001,
+        "dpl_learning_rate": None,
+        "mlp_learning_rate": None,
         "weight_decay": 0.0,
         "grad_clip_norm": 5.0,
         "lr_factor": 0.5,
-        "lr_patience": 8,
+        "lr_patience": 4,
         "early_stopping_patience": 8,
         "num_workers": 0,
         "device": "auto",
     },
-    "evaluation": {
-        "save_excel": True,
-    },
+    "evaluation": {"save_excel": True},
 }
 
 
 def merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = deepcopy(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = merge_dict(merged[key], value)
-        else:
-            merged[key] = value
+        merged[key] = merge_dict(merged[key], value) if isinstance(value, dict) and isinstance(merged.get(key), dict) else value
     return merged
 
 
 def load_config(config_path: str | Path) -> dict[str, Any]:
-    path = Path(config_path)
-    with path.open("r", encoding="utf-8") as file:
-        user_cfg = yaml.safe_load(file) or {}
-    cfg = merge_dict(DEFAULT_CONFIG, user_cfg)
-    cfg = _resolve_env_vars(cfg)
-    _validate_config(cfg)
-    return cfg
+    with Path(config_path).open("r", encoding="utf-8") as file:
+        config = merge_dict(DEFAULT_CONFIG, yaml.safe_load(file) or {})
+    config = _resolve_env_vars(config)
+    validate_config(config)
+    return config
 
 
 def save_config(config: dict[str, Any], output_path: str | Path) -> None:
@@ -86,46 +89,38 @@ def save_config(config: dict[str, Any], output_path: str | Path) -> None:
         yaml.safe_dump(config, file, allow_unicode=True, sort_keys=False)
 
 
-def _validate_period(period: list[str], name: str) -> None:
-    if not isinstance(period, list) or len(period) != 2:
-        raise ValueError(f"{name} must be a two-element date list.")
-
-
-def _validate_config(cfg: dict[str, Any]) -> None:
-    data_cfg = cfg["data"]
-    training_cfg = cfg["training"]
-    model_cfg = cfg["model"]
-
-    for key in ("train_period", "valid_period", "test_period"):
-        _validate_period(data_cfg[key], key)
-
-    if data_cfg["sequence_length"] <= 1:
-        raise ValueError("data.sequence_length must be greater than 1.")
-
-    if data_cfg["warmup_length"] < 0:
-        raise ValueError("data.warmup_length must be non-negative.")
-
-    data_dir = str(data_cfg.get("data_dir", "")).strip()
-    if not data_dir or data_dir.startswith("${"):
+def validate_config(cfg: dict[str, Any]) -> None:
+    data, model, training = cfg["data"], cfg["model"], cfg["training"]
+    for key in ("train_period", "valid_period"):
+        if not isinstance(data[key], list) or len(data[key]) != 2:
+            raise ValueError(f"data.{key} must be a two-element date list")
+    if data.get("test_period") is not None and (
+        not isinstance(data["test_period"], list) or len(data["test_period"]) != 2
+    ):
+        raise ValueError("data.test_period must be null or a two-element date list")
+    sequence_length, warmup = int(data["sequence_length"]), int(data["warmup_length"])
+    if not 1 < sequence_length or not 0 <= warmup < sequence_length:
+        raise ValueError("Require sequence_length > 1 and 0 <= warmup_length < sequence_length")
+    if len(data["feature_columns"]) < 2:
+        raise ValueError("At least precipitation and PET feature columns are required")
+    if model["name"].lower() not in {"dplgr4j", "dplgr4jnet", "dplgr4jd", "dplgr4jnetd"}:
+        raise ValueError("model.name must be dPLGR4J, dPLGR4JNet, dPLGR4Jd, or dPLGR4JNetd")
+    if model["param_limit_func"] not in {"sigmoid", "clamp"}:
+        raise ValueError("model.param_limit_func must be sigmoid or clamp")
+    if model["param_test_way"] not in {"final", "mean_time", "mean_basin"}:
+        raise ValueError("model.param_test_way must be final, mean_time, or mean_basin")
+    if model["name"].lower().endswith("d") and model["param_test_way"] == "mean_basin":
+        raise ValueError("Dynamic models do not support param_test_way=mean_basin")
+    if "net" in model["name"].lower() and not model.get("pretrained_dpl_path"):
+        dependency = "dPLGR4Jd" if model["name"].lower().endswith("d") else "dPLGR4J"
         raise ValueError(
-            "data.data_dir is not configured. Set DPLGR4JNET_DATA_DIR, edit configs/default.yaml, "
-            "or pass --data-dir."
+            f"{model['name']} requires model.pretrained_dpl_path from a trained {dependency} run"
         )
+    if int(training["epochs"]) < 1 or int(training["batch_size"]) < 1:
+        raise ValueError("training.epochs and training.batch_size must be positive")
 
-    if training_cfg["epochs"] < 1:
-        raise ValueError("training.epochs must be at least 1.")
 
-    if training_cfg["batch_size"] < 1:
-        raise ValueError("training.batch_size must be at least 1.")
-
-    if model_cfg["param_limit_func"] not in {"clamp", "sigmoid"}:
-        raise ValueError("model.param_limit_func must be 'clamp' or 'sigmoid'.")
-
-    if model_cfg["calibration_hidden_size"] < 1:
-        raise ValueError("model.calibration_hidden_size must be at least 1.")
-
-    if not 0.0 <= float(model_cfg["calibration_dropout"]) < 1.0:
-        raise ValueError("model.calibration_dropout must be in [0, 1).")
+_validate_config = validate_config
 
 
 def _resolve_env_vars(value: Any) -> Any:
@@ -134,6 +129,5 @@ def _resolve_env_vars(value: Any) -> Any:
     if isinstance(value, list):
         return [_resolve_env_vars(item) for item in value]
     if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-        env_name = value[2:-1].strip()
-        return os.environ.get(env_name, value)
+        return os.environ.get(value[2:-1].strip(), value)
     return value
