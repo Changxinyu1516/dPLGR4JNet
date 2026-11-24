@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from dplgr4jnet.model import DYNAMIC_MODELS, MODEL_DEPENDENCIES, MODEL_NAMES, canonical_model_name
+
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "experiment": {"name": "dplgr4j_sample", "seed": 42, "output_dir": "outputs/dplgr4j_sample"},
@@ -30,7 +32,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "window_stride": 365,
     },
     "model": {
-        "name": "dPLGR4J",
+        "name": "dPLGR4JStatic",
         "hidden_size": 16,
         "dropout": 0.0,
         "param_limit_func": "sigmoid",
@@ -79,6 +81,7 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
         config = merge_dict(DEFAULT_CONFIG, yaml.safe_load(file) or {})
     config = _resolve_env_vars(config)
     validate_config(config)
+    config["model"]["name"] = canonical_model_name(config["model"]["name"])
     return config
 
 
@@ -103,18 +106,19 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError("Require sequence_length > 1 and 0 <= warmup_length < sequence_length")
     if len(data["feature_columns"]) < 2:
         raise ValueError("At least precipitation and PET feature columns are required")
-    if model["name"].lower() not in {"dplgr4j", "dplgr4jnet", "dplgr4jd", "dplgr4jnetd"}:
-        raise ValueError("model.name must be dPLGR4J, dPLGR4JNet, dPLGR4Jd, or dPLGR4JNetd")
+    name = canonical_model_name(model["name"])
+    if name not in MODEL_NAMES:
+        raise ValueError(f"model.name must be one of {', '.join(MODEL_NAMES)}")
     if model["param_limit_func"] not in {"sigmoid", "clamp"}:
         raise ValueError("model.param_limit_func must be sigmoid or clamp")
     if model["param_test_way"] not in {"final", "mean_time", "mean_basin"}:
         raise ValueError("model.param_test_way must be final, mean_time, or mean_basin")
-    if model["name"].lower().endswith("d") and model["param_test_way"] == "mean_basin":
+    if name in DYNAMIC_MODELS and model["param_test_way"] == "mean_basin":
         raise ValueError("Dynamic models do not support param_test_way=mean_basin")
-    if "net" in model["name"].lower() and not model.get("pretrained_dpl_path"):
-        dependency = "dPLGR4Jd" if model["name"].lower().endswith("d") else "dPLGR4J"
+    dependency = MODEL_DEPENDENCIES.get(name)
+    if dependency and not model.get("pretrained_dpl_path"):
         raise ValueError(
-            f"{model['name']} requires model.pretrained_dpl_path from a trained {dependency} run"
+            f"{name} requires model.pretrained_dpl_path from a trained {dependency} run"
         )
     if int(training["epochs"]) < 1 or int(training["batch_size"]) < 1:
         raise ValueError("training.epochs and training.batch_size must be positive")

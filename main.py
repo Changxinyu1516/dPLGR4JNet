@@ -2,8 +2,8 @@
 
 The two Net models are second-stage models and must warm-start their dPL part:
 
-* dPLGR4JNet  <- dPLGR4J/best_model.pt
-* dPLGR4JNetd <- dPLGR4Jd/best_model.pt
+* dPLGR4JStaticWithMLP  <- dPLGR4JStatic/best_model.pt
+* dPLGR4JDynamicWithMLP <- dPLGR4JDynamic/best_model.pt
 
 Edit the settings below and run ``python main.py``.  Set
 ``AUTO_TRAIN_PREREQUISITE=True`` to run the required base model automatically
@@ -20,20 +20,17 @@ from typing import Any
 import torch
 
 from dplgr4jnet.config import load_config, save_config, validate_config
+from dplgr4jnet.model import MODEL_DEPENDENCIES, canonical_model_name
 from dplgr4jnet.trainer import run_experiment
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-MODEL_NAMES = ("dPLGR4J", "dPLGR4JNet", "dPLGR4Jd", "dPLGR4JNetd")
-MODEL_DEPENDENCIES = {
-    "dPLGR4JNet": "dPLGR4J",
-    "dPLGR4JNetd": "dPLGR4Jd",
-}
+MODEL_NAMES = ("dPLGR4JStatic", "dPLGR4JStaticWithMLP", "dPLGR4JDynamic", "dPLGR4JDynamicWithMLP")
 
 # ---------------------------------------------------------------------------
 # 1. Select exactly one model
 # ---------------------------------------------------------------------------
-MODEL_NAME = "dPLGR4J"
+MODEL_NAME = "dPLGR4JStatic"
 STATION_NAME = "01411300"
 DEVICE = "auto"  # auto, cpu, cuda, cuda:0, ...
 SEED = 42
@@ -73,7 +70,7 @@ AREA_COLUMN = "area_gages2"  # alternatively: area_geospa_fabric
 AREA_KM2 = None  # positive number overrides data/camels_topo.txt
 
 # ---------------------------------------------------------------------------
-# 3. dPLGR4J: static base model parameters
+# 3. dPLGR4JStatic: static base model parameters
 # ---------------------------------------------------------------------------
 SHARED_TRAINING_PARAMS = {
     "weight_decay": 0.0,
@@ -100,8 +97,8 @@ DPLGR4J_TRAINING = {
 }
 
 # ---------------------------------------------------------------------------
-# 4. dPLGR4JNet: static base parameters + residual MLP parameters
-#    The four base settings MUST match the dPLGR4J checkpoint above.
+# 4. dPLGR4JStaticWithMLP: static base parameters + residual MLP parameters
+#    The four base settings MUST match the dPLGR4JStatic checkpoint above.
 # ---------------------------------------------------------------------------
 DPLGR4JNET_PARAMS = {
     **DPLGR4J_PARAMS,
@@ -127,7 +124,7 @@ DPLGR4JNET_TRAINING = {
 }
 
 # ---------------------------------------------------------------------------
-# 5. dPLGR4Jd: dynamic base model parameters
+# 5. dPLGR4JDynamic: dynamic base model parameters
 # ---------------------------------------------------------------------------
 DPLGR4JD_PARAMS = {
     "hidden_size": 32,
@@ -148,8 +145,8 @@ DPLGR4JD_TRAINING = {
 }
 
 # ---------------------------------------------------------------------------
-# 6. dPLGR4JNetd: dynamic base parameters + residual MLP parameters
-#    The six base settings MUST match the dPLGR4Jd checkpoint above.
+# 6. dPLGR4JDynamicWithMLP: dynamic base parameters + residual MLP parameters
+#    The six base settings MUST match the dPLGR4JDynamic checkpoint above.
 # ---------------------------------------------------------------------------
 DPLGR4JNETD_PARAMS = {
     **DPLGR4JD_PARAMS,
@@ -175,32 +172,37 @@ DPLGR4JNETD_TRAINING = {
 }
 
 MODEL_PARAMETERS = {
-    "dPLGR4J": DPLGR4J_PARAMS,
-    "dPLGR4JNet": DPLGR4JNET_PARAMS,
-    "dPLGR4Jd": DPLGR4JD_PARAMS,
-    "dPLGR4JNetd": DPLGR4JNETD_PARAMS,
+    "dPLGR4JStatic": DPLGR4J_PARAMS,
+    "dPLGR4JStaticWithMLP": DPLGR4JNET_PARAMS,
+    "dPLGR4JDynamic": DPLGR4JD_PARAMS,
+    "dPLGR4JDynamicWithMLP": DPLGR4JNETD_PARAMS,
 }
 MODEL_TRAINING = {
-    "dPLGR4J": DPLGR4J_TRAINING,
-    "dPLGR4JNet": DPLGR4JNET_TRAINING,
-    "dPLGR4Jd": DPLGR4JD_TRAINING,
-    "dPLGR4JNetd": DPLGR4JNETD_TRAINING,
+    "dPLGR4JStatic": DPLGR4J_TRAINING,
+    "dPLGR4JStaticWithMLP": DPLGR4JNET_TRAINING,
+    "dPLGR4JDynamic": DPLGR4JD_TRAINING,
+    "dPLGR4JDynamicWithMLP": DPLGR4JNETD_TRAINING,
 }
 
 def model_output_dir(model_name: str) -> Path:
     return PROJECT_DIR / "outputs" / STATION_NAME / model_name
 
 def default_base_checkpoint(net_model_name: str) -> Path:
-    base_model = MODEL_DEPENDENCIES[net_model_name]
-    override = STATIC_DPL_CHECKPOINT if base_model == "dPLGR4J" else DYNAMIC_DPL_CHECKPOINT
-    return Path(override) if override is not None else model_output_dir(base_model) / "best_model.pt"
+    base_model = MODEL_DEPENDENCIES[canonical_model_name(net_model_name)]
+    is_static = base_model == "dPLGR4JStatic"
+    override = STATIC_DPL_CHECKPOINT if is_static else DYNAMIC_DPL_CHECKPOINT
+    if override is not None:
+        return Path(override)
+    current = model_output_dir(base_model) / "best_model.pt"
+    legacy = model_output_dir("dPLGR4J" if is_static else "dPLGR4Jd") / "best_model.pt"
+    return legacy if not current.is_file() and legacy.is_file() else current
 
 def build_config(
     model_name: str | None = None,
     pretrained_dpl_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build a configuration containing only the selected model's parameters."""
-    selected = MODEL_NAME if model_name is None else model_name
+    selected = canonical_model_name(MODEL_NAME if model_name is None else model_name)
     if selected not in MODEL_NAMES:
         raise ValueError(f"MODEL_NAME must be one of {MODEL_NAMES}; got {selected!r}")
     config = load_config(PROJECT_DIR / "configs" / "default.yaml")
@@ -237,7 +239,7 @@ def _checkpoint_value(config: dict[str, Any], section: str, key: str):
 
 def validate_base_checkpoint(net_config: dict[str, Any]) -> Path:
     """Check checkpoint type and all settings required to reproduce its baseline."""
-    net_model = net_config["model"]["name"]
+    net_model = canonical_model_name(net_config["model"]["name"])
     expected_base = MODEL_DEPENDENCIES[net_model]
     path = Path(net_config["model"]["pretrained_dpl_path"])
     if not path.is_file():
@@ -251,7 +253,7 @@ def validate_base_checkpoint(net_config: dict[str, Any]) -> Path:
     if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
         raise ValueError(f"Unsupported checkpoint format: {path}")
     actual_base = checkpoint.get("model_name")
-    if actual_base != expected_base:
+    if not isinstance(actual_base, str) or canonical_model_name(actual_base) != expected_base:
         raise ValueError(
             f"{net_model} requires {expected_base}, but checkpoint {path} contains {actual_base!r}"
         )
@@ -271,7 +273,7 @@ def validate_base_checkpoint(net_config: dict[str, Any]) -> Path:
         ("data", "window_stride"),
         ("data", "train_period"),
     ]
-    if expected_base == "dPLGR4Jd":
+    if expected_base == "dPLGR4JDynamic":
         common_checks.extend(
             [("model", "param_var_index"), ("model", "param_smoothness_weight")]
         )
@@ -314,11 +316,11 @@ def run_config(config: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
 
 def main() -> dict[str, Any]:
     """Run the selected model, respecting the two required training stages."""
-    selected = MODEL_NAME
+    config = build_config()
+    selected = config["model"]["name"]
     if selected in MODEL_DEPENDENCIES:
-        net_config = build_config(selected)
         try:
-            validate_base_checkpoint(net_config)
+            validate_base_checkpoint(config)
         except (FileNotFoundError, ValueError) as error:
             if not AUTO_TRAIN_PREREQUISITE:
                 raise
@@ -326,9 +328,9 @@ def main() -> dict[str, Any]:
             print(f"Prerequisite checkpoint is missing or incompatible: {error}")
             print(f"Training prerequisite {base_name} before {selected}...")
             run_config(build_config(base_name), dry_run=False)
-            validate_base_checkpoint(net_config)
-        return run_config(net_config, dry_run=DRY_RUN)
-    return run_config(build_config(selected), dry_run=DRY_RUN)
+            config = build_config(selected)
+            validate_base_checkpoint(config)
+    return run_config(config, dry_run=DRY_RUN)
 
 
 if __name__ == "__main__":

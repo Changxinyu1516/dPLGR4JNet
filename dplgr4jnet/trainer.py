@@ -11,9 +11,16 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from dplgr4jnet.data import build_dataset, build_full_sequence_tensors, load_data_bundle
-from dplgr4jnet.losses import NSELoss
+from dplgr4jnet.losses import NSELoss, StabilizedNSELoss
 from dplgr4jnet.metrics import summarize_metrics
-from dplgr4jnet.model import PARAMETER_NAMES, build_model
+from dplgr4jnet.model import (
+    DYNAMIC_MODELS,
+    MODEL_DEPENDENCIES,
+    PARAMETER_NAMES,
+    WATER_BALANCE_MODELS,
+    build_model,
+    canonical_model_name,
+)
 from dplgr4jnet.postprocess import save_history, save_json, save_prediction_artifacts
 
 
@@ -33,7 +40,7 @@ def select_device(device_cfg: str) -> torch.device:
 
 def create_model(cfg: dict[str, Any], feature_count: int, warmup_length: int) -> nn.Module:
     model_cfg = cfg["model"]
-    name = str(model_cfg["name"])
+    name = canonical_model_name(str(model_cfg["name"]))
     kwargs: dict[str, Any] = {
         "n_input_features": feature_count,
         "n_output_features": 4,
@@ -43,9 +50,15 @@ def create_model(cfg: dict[str, Any], feature_count: int, warmup_length: int) ->
         "param_test_way": model_cfg["param_test_way"],
         "dropout": float(model_cfg["dropout"]),
     }
-    if name.lower().endswith("d"):
+    if name in DYNAMIC_MODELS:
         kwargs.update(param_var_index=model_cfg.get("param_var_index"), param_smoothness_weight=float(model_cfg.get("param_smoothness_weight", 0.0)))
-    if "net" in name.lower():
+    if name in WATER_BALANCE_MODELS:
+        kwargs.update(
+            lambda_q=float(model_cfg.get("lambda_q", 1.0)),
+            lambda_b=float(model_cfg.get("lambda_b", 0.01)),
+            lambda_e=float(model_cfg.get("lambda_e", 0.01)),
+        )
+    if name in MODEL_DEPENDENCIES:
         kwargs.update(
             n_dynamic_features=model_cfg.get("n_dynamic_features"),
             calibration_hidden_dim=model_cfg["calibration_hidden_dim"],
@@ -99,7 +112,7 @@ def run_experiment(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, Any]
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=float(cfg["training"]["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=float(cfg["training"]["lr_factor"]), patience=int(cfg["training"]["lr_patience"]))
-    criterion = NSELoss()
+    criterion = StabilizedNSELoss() if hasattr(model, "compute_model_loss") else NSELoss()
     best_loss, bad_epochs, best_epoch = float("inf"), 0, 0
     history: list[dict[str, Any]] = []
     best_model_path = output_dir / "best_model.pt"
@@ -175,11 +188,12 @@ def run_experiment(cfg: dict[str, Any], dry_run: bool = False) -> dict[str, Any]
     }
 
 
-def run_epoch(model: nn.Module, loader: DataLoader, criterion: NSELoss, optimizer: torch.optim.Optimizer | None, device: torch.device, warmup_length: int, grad_clip_norm: float | None, train_mode: bool) -> tuple[float, dict[str, float]]:
+def run_epoch(model: nn.Module, loader: DataLoader, criterion: nn.Module, optimizer: torch.optim.Optimizer | None, device: torch.device, warmup_length: int, grad_clip_norm: float | None, train_mode: bool) -> tuple[float, dict[str, float]]:
     model.train(train_mode)
     losses = []
     observations = []
     simulations = []
+    compute_model_loss = getattr(model, "compute_model_loss", None)
     context = torch.enable_grad() if train_mode else torch.no_grad()
     with context:
         for batch in loader:
@@ -187,7 +201,11 @@ def run_epoch(model: nn.Module, loader: DataLoader, criterion: NSELoss, optimize
             if optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
             prediction = model(x_raw, z_norm)
-            loss = criterion(prediction, y[warmup_length:])
+            target = y[warmup_length:]
+            loss = (
+                criterion(prediction, target) if compute_model_loss is None
+                else compute_model_loss(prediction, target, criterion)
+            )
             if hasattr(model, "regularization_loss"):
                 loss = loss + model.regularization_loss()
             if optimizer is not None:
@@ -196,7 +214,7 @@ def run_epoch(model: nn.Module, loader: DataLoader, criterion: NSELoss, optimize
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
                 optimizer.step()
             losses.append(float(loss.detach().cpu()))
-            observations.append(y[warmup_length:].detach().cpu().numpy().reshape(-1))
+            observations.append(target.detach().cpu().numpy().reshape(-1))
             simulations.append(prediction.detach().cpu().numpy().reshape(-1))
     metrics = summarize_metrics(np.concatenate(observations), np.concatenate(simulations))
     return float(np.mean(losses)), metrics
@@ -234,5 +252,17 @@ def evaluate_split(model: nn.Module, frame: pd.DataFrame, bundle, split_name: st
     simulated = prediction[:, 0, 0].detach().cpu().numpy()
     metrics = summarize_metrics(observed, simulated)
     parameters = _parameter_frame(extras, dates, bundle.warmup_length)
-    save_prediction_artifacts(output_dir, split_name, dates[bundle.warmup_length :], observed, simulated, bundle.meta.area_km2, metrics, parameters, save_excel)
+    diagnostics = None
+    if "diagnostics" in extras:
+        diagnostics = pd.DataFrame({
+            "date": dates[bundle.warmup_length:],
+            **{
+                key: values[:, 0, 0].detach().cpu().numpy()
+                for key, values in extras["diagnostics"].items()
+            },
+        })
+    save_prediction_artifacts(
+        output_dir, split_name, dates[bundle.warmup_length:], observed, simulated,
+        bundle.meta.area_km2, metrics, parameters, save_excel, diagnostics=diagnostics,
+    )
     return {"split": split_name, **metrics}

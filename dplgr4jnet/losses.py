@@ -17,3 +17,16 @@ class NSELoss(nn.Module):
         denominator = torch.sum(centered**2, dim=1) + self.eps
         nse = 1.0 - numerator / denominator
         return 1.0 - nse.mean()
+
+
+class StabilizedNSELoss(nn.Module):
+    """The torchhydro runoff loss used by the water-balance experiment."""
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        valid = ~target.isnan()
+        observed = target[valid]
+        if observed.numel() == 0:
+            return pred[valid].sum()
+        squared_error = (pred[valid] - observed).square().sum()
+        total_variation = (observed - observed.mean()).square().sum()
+        return squared_error / (total_variation.sqrt() + 0.1).square()

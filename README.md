@@ -1,17 +1,19 @@
 # dPLGR4JNet
 
-这是一个独立的 PyTorch 降雨–径流建模项目，核心计算来自并同步到 `torchhydro` 中的 `dpl4gr4j.py` 与 `dpl4gr4j_dyna.py`。项目不要求安装 `torchhydro`，可直接使用仓库 `data` 目录中的单流域 CSV 样例训练和评估。
+这是一个独立的 PyTorch 降雨–径流建模项目，核心计算改编自 `torchhydro`。独立训练入口可使用仓库 `data` 目录中的单流域 CSV 样例训练和评估。两河流域的原始 `torchhydro` 实验入口见下文。
 
 ## 支持的模型
 
-| 配置名 | GR4J 参数 | 径流校正网络 |
-|---|---|---|
-| `dPLGR4J` | 每个样本一组静态参数 | 无 |
-| `dPLGR4JNet` | 每个样本一组静态参数 | 因果残差 MLP |
-| `dPLGR4Jd` | X1/X2/X3 中的指定参数逐日变化，X4 固定 | 无 |
-| `dPLGR4JNetd` | X1/X2/X3 中的指定参数逐日变化，X4 固定 | 因果残差 MLP |
+| 配置名 | GR4J 参数 | 径流校正网络 | 旧配置名 |
+|---|---|---|---|
+| `dPLGR4JStatic` | 静态 | 无 | `dPLGR4J` |
+| `dPLGR4JStaticWithMLP` | 静态 | 因果残差 MLP | `dPLGR4JNet` |
+| `dPLGR4JDynamic` | 动态 | 无 | `dPLGR4Jd` |
+| `dPLGR4JDynamicWithMLP` | 动态 | 因果残差 MLP | `dPLGR4JNetd` |
+| `dPLGR4JDynamicWaterBalance` | 动态，带水量平衡与蒸散发约束 | 无 | `DplLstmGr4jWaterBalance` |
+| `dPLGR4JDynamicWaterBalanceWithMLP` | 动态，带水量平衡与蒸散发约束 | 因果残差 MLP | `DplLstmGr4jWaterBalanceWithMLP` |
 
-四种模型使用相同的数据、训练与导出接口。最新版实现包含连续暖机、GR4J 的 90%/10% 单位线分流、动态参数平滑正则、预训练 dPL 检查点加载、MLP 因果历史窗口和残差零初始化。
+动态模型可让 X1、X2、X3 中的指定参数逐日变化，X4 保持固定。YAML 和命令行仍可使用表中的旧配置名。Python 类名对应配置名，前缀写作 `DPLGR4J`，例如 `DPLGR4JDynamicWaterBalance`。
 
 ## 安装
 
@@ -62,16 +64,16 @@ epoch=001 train_loss=... NSE=... RMSE=... KGE=...
 训练依赖关系为：
 
 ```text
-dPLGR4J  ──best_model.pt──> dPLGR4JNet
-dPLGR4Jd ──best_model.pt──> dPLGR4JNetd
+dPLGR4JStatic  ──best_model.pt──> dPLGR4JStaticWithMLP
+dPLGR4JDynamic ──best_model.pt──> dPLGR4JDynamicWithMLP
 ```
 
-两个 Net 模型不是从头训练：它们会读取相应基础模型的 LSTM+GR4J 权重，残差 MLP 采用零初始化，然后以较小的 `dpl_learning_rate` 和较大的 `mlp_learning_rate` 联合微调。
+两个带 MLP 的模型会读取相应基础模型的 LSTM+GR4J 权重，残差 MLP 采用零初始化，然后以较小的 `dpl_learning_rate` 和较大的 `mlp_learning_rate` 联合微调。
 
 第一步，训练静态或动态基础模型：
 
 ```python
-MODEL_NAME = "dPLGR4J"  # 动态流程改为 dPLGR4Jd
+MODEL_NAME = "dPLGR4JStatic"  # 动态流程改为 dPLGR4JDynamic
 STATION_NAME = "01013500"
 DRY_RUN = False
 ```
@@ -85,17 +87,17 @@ python main.py
 第二步，把模型改为相应 Net 模型后再次运行：
 
 ```python
-MODEL_NAME = "dPLGR4JNet"  # 动态流程改为 dPLGR4JNetd
+MODEL_NAME = "dPLGR4JStaticWithMLP"  # 动态流程改为 dPLGR4JDynamicWithMLP
 ```
 
 默认检查点路径为：
 
 ```text
-outputs/{station_name}/dPLGR4J/best_model.pt
-outputs/{station_name}/dPLGR4Jd/best_model.pt
+outputs/{station_name}/dPLGR4JStatic/best_model.pt
+outputs/{station_name}/dPLGR4JDynamic/best_model.pt
 ```
 
-如需使用其他检查点，可设置 `STATIC_DPL_CHECKPOINT` 或 `DYNAMIC_DPL_CHECKPOINT`。如果希望一次命令自动先训练缺失的基础模型，可设置：
+新名称的目录中缺少检查点时，主函数会查找旧名称目录。也可通过 `STATIC_DPL_CHECKPOINT` 或 `DYNAMIC_DPL_CHECKPOINT` 指定权重文件。如果希望一次命令自动先训练缺失的基础模型，可设置：
 
 ```python
 AUTO_TRAIN_PREREQUISITE = True
@@ -103,7 +105,7 @@ AUTO_TRAIN_PREREQUISITE = True
 
 主函数会检查检查点模型类型，以及 `hidden_size`、特征顺序、暖机长度、参数聚合方式和动态参数索引等是否一致，避免把不兼容的基础权重用于 Net 模型。如果只想检查数据和前向计算，将 `DRY_RUN` 改为 `True`；但 Net 模型即使 dry run 也必须具有基础检查点。
 
-修改训练时期、窗口长度或 `WINDOW_STRIDE` 后，原基础检查点会被判定为不兼容，需要先重新训练 `dPLGR4J`/`dPLGR4Jd`。启用 `AUTO_TRAIN_PREREQUISITE` 时，程序会自动重训缺失或不兼容的基础模型。
+修改训练时期、窗口长度或 `WINDOW_STRIDE` 后，原基础检查点会被判定为不兼容，需要先重新训练 `dPLGR4JStatic`/`dPLGR4JDynamic`。启用 `AUTO_TRAIN_PREREQUISITE` 时，程序会自动重训缺失或不兼容的基础模型。
 
 ### 命令行入口
 
@@ -118,7 +120,7 @@ python -m dplgr4jnet --config configs/default.yaml --dry-run
 ```powershell
 python -m dplgr4jnet --config configs/default.yaml `
   --station-name 01022500 `
-  --model dPLGR4Jd `
+  --model dPLGR4JDynamic `
   --dry-run
 ```
 
@@ -128,7 +130,7 @@ python -m dplgr4jnet --config configs/default.yaml `
 python tests/smoke_models.py
 ```
 
-训练默认的静态基础模型 `dPLGR4J`：
+训练默认的静态基础模型 `dPLGR4JStatic`：
 
 ```powershell
 python -m dplgr4jnet --config configs/default.yaml
@@ -137,23 +139,23 @@ python -m dplgr4jnet --config configs/default.yaml
 选择动态基础模型：
 
 ```powershell
-python -m dplgr4jnet --config configs/default.yaml --model dPLGR4Jd
+python -m dplgr4jnet --config configs/default.yaml --model dPLGR4JDynamic
 ```
 
 通过命令行运行 Net 模型时也必须提供基础检查点：
 
 ```powershell
 python -m dplgr4jnet --config configs/default.yaml `
-  --model dPLGR4JNet `
-  --pretrained-dpl-path outputs/01013500/dPLGR4J/best_model.pt
+  --model dPLGR4JStaticWithMLP `
+  --pretrained-dpl-path outputs/01013500/dPLGR4JStatic/best_model.pt
 ```
 
 常用覆盖参数：
 
 ```powershell
 python -m dplgr4jnet --config configs/default.yaml `
-  --model dPLGR4JNetd `
-  --pretrained-dpl-path outputs/01013500/dPLGR4Jd/best_model.pt `
+  --model dPLGR4JDynamicWithMLP `
+  --pretrained-dpl-path outputs/01013500/dPLGR4JDynamic/best_model.pt `
   --epochs 20 `
   --data-dir data `
   --output-dir outputs/my_run
@@ -163,8 +165,8 @@ python -m dplgr4jnet --config configs/default.yaml `
 
 ```yaml
 model:
-  name: dPLGR4JNetd
-  pretrained_dpl_path: outputs/01013500/dPLGR4Jd/best_model.pt
+  name: dPLGR4JDynamicWithMLP
+  pretrained_dpl_path: outputs/01013500/dPLGR4JDynamic/best_model.pt
   param_var_index: [0]
   param_test_way: mean_time
   param_smoothness_weight: 0.01
@@ -174,7 +176,7 @@ model:
 
 每次完整运行会保存：
 
-- `best_model.pt`：最佳验证损失对应的模型权重、配置、epoch 和损失；
+- `best_model.pt`：最佳训练损失对应的模型权重、配置、epoch 和损失；
 - `history.csv`、`metrics_summary.csv`：训练过程和 train/valid/test 指标；
 - `{split}_predictions.csv`：观测与模拟流量，同时包含 mm/day 和 m³/s；
 - `{split}_parameters.csv`：逐日物理参数、实际采用的归一化参数以及 LSTM 原始生成参数；
@@ -182,6 +184,32 @@ model:
 - `feature_scaler.json`、`station_meta.json`、`resolved_config.yaml`：复现实验所需信息。
 
 静态模型的物理参数会逐日重复，便于与流量按日期关联；动态模型会保存真实的逐日参数轨迹。默认仓库已用样例流域完成一轮验证，结果位于 `outputs/sample_verified`，动态参数验证位于 `outputs/dynamic_verified`。
+
+## 水量平衡与蒸散发约束
+
+[两河流域原实验脚本](examples/dpl_gr4j_waterbal.py)保留了原实验的分期、特征、两阶段训练配置及 Excel 导出入口。该脚本位于 `examples/`，供使用自定义 `torchhydro` 环境和 `SXdata` 的原实验复跑使用。运行前需配置 `hydro_setting.yml`、本地数据和预训练权重路径。下文的独立训练流程使用本仓库的模型代码和 CAMELS 流域 `01411300` 的 CSV 样例。
+
+独立版本提供 `dPLGR4JDynamicWaterBalance` 和 `dPLGR4JDynamicWaterBalanceWithMLP`。样例中仅 X2 逐日变化，MLP 使用当天和前四天的特征。两阶段都使用稳定版 NSE 损失、水量平衡残差平方均值及超出 PET 的蒸散发惩罚，权重分别为 1.0、0.1 和 0.05。水平衡计入实际地下水交换、产流库和汇流库的蓄水变化、两条单位线的在途水量及容量截断损失。
+
+使用 [独立样例配置](configs/water_balance.yaml)检查前向计算并训练第一阶段：
+
+```powershell
+python -m dplgr4jnet --config configs/water_balance.yaml --dry-run
+python -m dplgr4jnet --config configs/water_balance.yaml
+```
+
+以第一阶段的最佳权重初始化第二阶段，并给两个分支配置各自的学习率：
+
+```powershell
+python -m dplgr4jnet --config configs/water_balance.yaml `
+  --model dPLGR4JDynamicWaterBalanceWithMLP `
+  --pretrained-dpl-path outputs/water_balance/base/best_model.pt `
+  --output-dir outputs/water_balance/mlp
+```
+
+每个评估时期会额外输出 `{split}_water_balance.csv`，并在该时期的 Excel 文件中增加 `water_balance` 工作表。逐日 X1–X4 在对应的参数 CSV 和 Excel 工作表中。使用原实验的检查点时，应保持 LSTM 隐藏维度、输入特征顺序及标准化方式与原试验一致。
+
+运行 `python tests/smoke_water_balance.py` 可检查三项损失、两阶段训练和导出结果。
 
 ## 许可与来源
 

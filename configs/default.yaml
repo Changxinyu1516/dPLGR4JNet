@@ -29,7 +29,7 @@ data:
   window_stride: 365
 
 model:
-  name: dPLGR4J  # dPLGR4J | dPLGR4JNet | dPLGR4Jd | dPLGR4JNetd
+  name: dPLGR4JStatic
   hidden_size: 16
   dropout: 0.0
   param_limit_func: sigmoid

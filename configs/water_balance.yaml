@@ -1,0 +1,38 @@
+experiment:
+  name: gr4j_water_balance_sample
+  output_dir: outputs/water_balance/base
+
+data:
+  station_name: "01411300"
+  train_period: ["1980-01-01", "1981-12-31"]
+  valid_period: ["1982-01-01", "1982-12-31"]
+  feature_columns:
+    - PRECIP
+    - PET_Pristley-Taylor(mm)
+    - tmax(C)
+    - vp(Pa)
+    - srad(W/m2)
+  sequence_length: 180
+  warmup_length: 0
+  window_stride: 180
+
+model:
+  name: dPLGR4JDynamicWaterBalance
+  hidden_size: 32
+  param_test_way: final
+  param_var_index: [1]
+  param_smoothness_weight: 0.0
+  calibration_history_length: 5
+  calibration_hidden_dim: [64, 32]
+  calibration_dropout: 0.15
+  lambda_q: 1.0
+  lambda_b: 0.1
+  lambda_e: 0.05
+
+training:
+  epochs: 15
+  batch_size: 4
+  learning_rate: 0.0001
+  dpl_learning_rate: 0.0000005
+  mlp_learning_rate: 0.0001
+  lr_patience: 1

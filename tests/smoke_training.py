@@ -19,7 +19,7 @@ def main() -> None:
     config = deepcopy(DEFAULT_CONFIG)
     config["data"].update(
         data_dir="data",
-        station_name="01013500",
+        station_name="01411300",
         file=None,
         train_period=["1980-01-01", "1980-12-31"],
         valid_period=["1981-01-01", "1981-12-31"],
@@ -28,7 +28,6 @@ def main() -> None:
         warmup_length=5,
         window_stride=100,
     )
-    config["model"]["name"] = "dPLGR4J"
     config["training"].update(epochs=1, batch_size=4, device="cpu")
     config["evaluation"]["save_excel"] = False
     with TemporaryDirectory() as directory:

@@ -32,6 +32,8 @@ def save_prediction_artifacts(
     metrics: dict[str, float],
     parameters: pd.DataFrame | None = None,
     save_excel: bool = True,
+    *,
+    diagnostics: pd.DataFrame | None = None,
 ) -> None:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -56,6 +58,9 @@ def save_prediction_artifacts(
 
     save_json(output_path / f"{split_name}_metrics.json", metrics)
 
+    if diagnostics is not None:
+        diagnostics.to_csv(output_path / f"{split_name}_water_balance.csv", index=False, encoding="utf-8-sig")
+
     if save_excel:
         excel_path = output_path / f"{split_name}_predictions.xlsx"
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
@@ -63,3 +68,5 @@ def save_prediction_artifacts(
             pd.DataFrame([metrics]).to_excel(writer, sheet_name="metrics", index=False)
             if parameters is not None:
                 parameters.to_excel(writer, sheet_name="parameters", index=False)
+            if diagnostics is not None:
+                diagnostics.to_excel(writer, sheet_name="water_balance", index=False)

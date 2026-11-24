@@ -253,7 +253,10 @@ class Gr4j4DplWithDynamic(nn.Module):
         selected = parameters[..., indices]
         return torch.mean((selected[1:] - selected[:-1]) ** 2)
 
-    def forward(self, p_and_e: Tensor, parameters: Tensor, return_state: bool = False):
+    def forward(
+        self, p_and_e: Tensor, parameters: Tensor, return_state: bool = False,
+        *, return_diagnostics: bool = False,
+    ):
         if p_and_e.shape[:2] != parameters.shape[:2]:
             raise ValueError("p_and_e and dynamic parameters must share time and batch dimensions")
         seq_len, batch_size = p_and_e.shape[:2]
@@ -273,10 +276,19 @@ class Gr4j4DplWithDynamic(nn.Module):
         s_full = p_and_e.new_zeros((seq_len, batch_size))
         r_full = p_and_e.new_zeros((seq_len, batch_size))
         exchange_full = p_and_e.new_zeros((seq_len, batch_size))
+        if return_diagnostics:
+            s_begin = torch.zeros_like(s_full)
+            s_end = torch.zeros_like(s_full)
+            r_begin = torch.zeros_like(r_full)
+            r_end = torch.zeros_like(r_full)
         s = 0.5 * x1[0].detach()
         for i in range(seq_len):
+            if return_diagnostics:
+                s_begin[i] = s
             pr, s, perc = production(p_and_e[i, :, :2], x1[i], s, return_perc=True)
             pr_full[i], perc_full[i], s_full[i] = pr, perc, s / x1[i]
+            if return_diagnostics:
+                s_end[i] = s
         uh1, uh2 = uh_gr4j(x4)
         q9 = p_and_e.new_zeros((seq_len, batch_size, 1))
         q1 = p_and_e.new_zeros((seq_len, batch_size, 1))
@@ -286,10 +298,22 @@ class Gr4j4DplWithDynamic(nn.Module):
             q1[:, j : j + 1] = 0.1 * uh_conv(source, uh2[j].reshape(-1, 1, 1))
         r = 0.5 * x3[0].detach()
         for i in range(seq_len):
+            if return_diagnostics:
+                r_begin[i] = r
             r_clamped = torch.clamp(r, torch.zeros_like(r), x3[i])
             exchange_full[i] = x2[i] * (r_clamped / x3[i]) ** 3.5
             q, r = routing(q9[i, :, 0], q1[i, :, 0], x2[i], x3[i], r)
             q_full[i], r_full[i] = q, r / x3[i]
+            if return_diagnostics:
+                r_end[i] = r
+        if return_diagnostics:
+            from dplgr4jnet.water_balance import water_balance_diagnostics
+
+            return water_balance_diagnostics(
+                self.warmup_length, p_and_e, physical, s_begin, s_end, r_begin, r_end,
+                pr_full, perc_full, q9[..., 0], q1[..., 0], q_full,
+                s_full, r_full, exchange_full,
+            )
         outputs = tuple(v[self.warmup_length :].unsqueeze(-1) for v in (q_full, s_full, r_full, pr_full, perc_full, exchange_full))
         return outputs if return_state else outputs[0]
 
@@ -335,7 +359,7 @@ class _DplBase(nn.Module):
         return next(self.parameters()).new_zeros(())
 
 
-class DPLGR4J(_DplBase):
+class DPLGR4JStatic(_DplBase):
     """Static-parameter dPL-GR4J."""
 
     def forward(self, x: Tensor, z: Tensor, return_extras: bool = False):
@@ -345,7 +369,7 @@ class DPLGR4J(_DplBase):
         return (states[0], _parameter_extras(self.pb_model, states)) if return_extras else states[0]
 
 
-class DPLGR4Jd(_DplBase):
+class DPLGR4JDynamic(_DplBase):
     """Dynamic-parameter dPL-GR4J."""
 
     pb_model_class = Gr4j4DplWithDynamic
@@ -408,7 +432,7 @@ class CalibrationMLP(nn.Module):
 
 
 class _DplNetBase(nn.Module):
-    dpl_class = DPLGR4J
+    dpl_class = DPLGR4JStatic
 
     def __init__(self, n_input_features: int, n_output_features: int, n_hidden_states: int, warmup_length: int, n_dynamic_features: Optional[int] = None, calibration_hidden_dim: int | Sequence[int] = (64, 32), calibration_output_dim: int = 1, calibration_dropout: float = 0.05, calibration_history_length: int = 1, enforce_nonnegative: bool = True, zero_init_mlp: bool = True, transform_physical_features: bool = True, pretrained_dpl_path=None, preserve_pretrained_baseline: bool = True, dpl_anchor_weight: float = 0.0, correction_penalty_weight: float = 0.0, **dpl_kwargs):
         super().__init__()
@@ -437,8 +461,16 @@ class _DplNetBase(nn.Module):
     def _load_pretrained_dpl(self, checkpoint_path) -> None:
         checkpoint = torch.load(Path(checkpoint_path), map_location="cpu", weights_only=False)
         state = checkpoint.get("model_state_dict", checkpoint.get("state_dict", checkpoint)) if isinstance(checkpoint, dict) else checkpoint
+        if state and all(key.startswith("module.") for key in state):
+            state = {key.removeprefix("module."): value for key, value in state.items()}
         if any(key.startswith("dplgr4j.") for key in state):
             state = {key.removeprefix("dplgr4j."): value for key, value in state.items() if key.startswith("dplgr4j.")}
+        # torchhydro checkpoints use camel-case names for these LSTM projections.
+        state = {
+            key.replace("dl_model.linearIn.", "dl_model.linear_in.")
+            .replace("dl_model.linearOut.", "dl_model.linear_out."): value
+            for key, value in state.items()
+        }
         self.dplgr4j.load_state_dict(state, strict=True)
 
     def _history(self, features: Tensor) -> Tensor:
@@ -456,16 +488,21 @@ class _DplNetBase(nn.Module):
     def forward(self, x: Tensor, z: Tensor, return_extras: bool = False):
         _, extras = self.dplgr4j(x, z, return_extras=True)
         base = extras["base_streamflow"]
+        features = (extras["S_norm"], extras["R_norm"], extras["prs"], extras["perc"], extras["gw_ex"])
+        prediction, correction = self._calibrate(base, features, z)
+        extras["correction"] = correction
+        return (prediction, extras) if return_extras else prediction
+
+    def _calibrate(self, base: Tensor, physical_features: tuple[Tensor, ...], z: Tensor) -> tuple[Tensor, Tensor]:
         dynamic = z[self.warmup_length :, :, : self.n_dynamic_features]
-        features = torch.cat([base, extras["S_norm"], extras["R_norm"], extras["prs"], extras["perc"], extras["gw_ex"], dynamic], dim=-1)
+        features = torch.cat((base, *physical_features, dynamic), dim=-1)
         history = self._history(features).reshape(-1, self.calibration_history_length, features.shape[-1])
         corrected, correction = self.calibrator(history, base.reshape(-1, 1), True)
         self._last_correction = correction
         prediction = corrected.view_as(base)
         if self.enforce_nonnegative and not self.training:
             prediction = torch.clamp_min(prediction, 0.0)
-        extras["correction"] = correction.view_as(base)
-        return (prediction, extras) if return_extras else prediction
+        return prediction, correction.view_as(base)
 
     def optimizer_parameter_groups(self, default_lr: float, dpl_lr=None, mlp_lr=None):
         return [{"params": self.dplgr4j.parameters(), "lr": float(default_lr if dpl_lr is None else dpl_lr)}, {"params": self.calibrator.parameters(), "lr": float(default_lr if mlp_lr is None else mlp_lr)}]
@@ -480,36 +517,69 @@ class _DplNetBase(nn.Module):
         return loss
 
 
-class DPLGR4JNet(_DplNetBase):
+class DPLGR4JStaticWithMLP(_DplNetBase):
     """Static dPL-GR4J with a causal residual MLP."""
 
 
-class DPLGR4JNetd(_DplNetBase):
+class DPLGR4JDynamicWithMLP(_DplNetBase):
     """Dynamic dPL-GR4J with a causal residual MLP."""
 
-    dpl_class = DPLGR4Jd
+    dpl_class = DPLGR4JDynamic
 
 
 MODEL_REGISTRY = {
-    "dplgr4j": DPLGR4J,
-    "dplgr4jnet": DPLGR4JNet,
-    "dplgr4jd": DPLGR4Jd,
-    "dplgr4jnetd": DPLGR4JNetd,
+    "dPLGR4JStatic": DPLGR4JStatic,
+    "dPLGR4JStaticWithMLP": DPLGR4JStaticWithMLP,
+    "dPLGR4JDynamic": DPLGR4JDynamic,
+    "dPLGR4JDynamicWithMLP": DPLGR4JDynamicWithMLP,
+}
+
+WATER_BALANCE_BASE = "dPLGR4JDynamicWaterBalance"
+WATER_BALANCE_NET = "dPLGR4JDynamicWaterBalanceWithMLP"
+WATER_BALANCE_MODELS = {WATER_BALANCE_BASE, WATER_BALANCE_NET}
+DYNAMIC_MODELS = {"dPLGR4JDynamic", "dPLGR4JDynamicWithMLP", *WATER_BALANCE_MODELS}
+MODEL_NAMES = (*MODEL_REGISTRY, WATER_BALANCE_BASE, WATER_BALANCE_NET)
+MODEL_DEPENDENCIES = {
+    "dPLGR4JStaticWithMLP": "dPLGR4JStatic",
+    "dPLGR4JDynamicWithMLP": "dPLGR4JDynamic",
+    WATER_BALANCE_NET: WATER_BALANCE_BASE,
+}
+_MODEL_ALIASES = {
+    **{name.lower(): name for name in MODEL_NAMES},
+    "dplgr4j": "dPLGR4JStatic",
+    "dplgr4jnet": "dPLGR4JStaticWithMLP",
+    "dplgr4jd": "dPLGR4JDynamic",
+    "dplgr4jnetd": "dPLGR4JDynamicWithMLP",
+    "dpllstmgr4jwaterbalance": WATER_BALANCE_BASE,
+    "dpllstmgr4jwaterbalancewithmlp": WATER_BALANCE_NET,
 }
 
 
+def canonical_model_name(name: str) -> str:
+    return _MODEL_ALIASES.get(name.lower(), name)
+
+
 def build_model(name: str, **kwargs) -> nn.Module:
-    key = name.lower()
+    key = canonical_model_name(name)
+    if key in WATER_BALANCE_MODELS:
+        from dplgr4jnet.water_balance import DPLGR4JDynamicWaterBalance, DPLGR4JDynamicWaterBalanceWithMLP
+
+        if key == WATER_BALANCE_BASE:
+            return DPLGR4JDynamicWaterBalance(**kwargs)
+        return DPLGR4JDynamicWaterBalanceWithMLP(**kwargs)
     if key not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model {name!r}; choose from {', '.join(MODEL_REGISTRY)}")
+        raise ValueError(f"Unknown model {name!r}; choose from {', '.join(MODEL_NAMES)}")
     return MODEL_REGISTRY[key](**kwargs)
 
 
-# Compatibility with torchhydro class names.
-DplLstmGr4j = DPLGR4J
-DplLstmGr4jWithMLP = DPLGR4JNet
-DplLstmGr4jDynamic = DPLGR4Jd
-DplLstmGr4jDynamicWithMLP = DPLGR4JNetd
+# Compatibility with earlier Python imports and torchhydro class names.
+DPLGR4J = DplLstmGr4j = DPLGR4JStatic
+DPLGR4JNet = DplLstmGr4jWithMLP = DPLGR4JStaticWithMLP
+DPLGR4Jd = DplLstmGr4jDynamic = DPLGR4JDynamic
+DPLGR4JNetd = DplLstmGr4jDynamicWithMLP = DPLGR4JDynamicWithMLP
 
 
-__all__ = ["DPLGR4J", "DPLGR4JNet", "DPLGR4Jd", "DPLGR4JNetd", "build_model"]
+__all__ = [
+    "DPLGR4JStatic", "DPLGR4JStaticWithMLP", "DPLGR4JDynamic", "DPLGR4JDynamicWithMLP",
+    "DPLGR4J", "DPLGR4JNet", "DPLGR4Jd", "DPLGR4JNetd", "build_model",
+]

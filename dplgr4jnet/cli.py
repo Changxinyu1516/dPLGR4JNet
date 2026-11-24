@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from dplgr4jnet.config import load_config, save_config, validate_config
+from dplgr4jnet.model import MODEL_NAMES, canonical_model_name
 from dplgr4jnet.trainer import run_experiment
 
 
@@ -14,8 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML config.")
     parser.add_argument("--data-dir", help="Override data.data_dir in config or via environment.")
     parser.add_argument("--station-name", help="Override station_name in config.")
-    parser.add_argument("--model", choices=["dPLGR4J", "dPLGR4JNet", "dPLGR4Jd", "dPLGR4JNetd"], help="Model variant.")
-    parser.add_argument("--pretrained-dpl-path", help="Required base checkpoint for dPLGR4JNet/dPLGR4JNetd.")
+    parser.add_argument("--model", choices=MODEL_NAMES, type=canonical_model_name, help="Model variant.")
+    parser.add_argument("--pretrained-dpl-path", help="Base checkpoint required by the MLP variants.")
     parser.add_argument("--output-dir", help="Override experiment.output_dir in config.")
     parser.add_argument("--epochs", type=int, help="Override training.epochs in config.")
     parser.add_argument("--device", help="Override training.device in config.")

@@ -12,6 +12,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dplgr4jnet.config import DEFAULT_CONFIG
+from dplgr4jnet.model import canonical_model_name
 from dplgr4jnet.trainer import create_model
 
 
@@ -29,8 +30,6 @@ def base_config(name: str) -> dict:
     config = deepcopy(DEFAULT_CONFIG)
     config["model"]["name"] = name
     config["model"]["pretrained_dpl_path"] = None
-    if name == "dPLGR4Jd":
-        config["model"]["param_test_way"] = "mean_time"
     return config
 
 
@@ -77,8 +76,12 @@ def main() -> None:
     z = torch.randn(40, 2, 6)
     with TemporaryDirectory() as directory:
         root = Path(directory)
-        check_pair("dPLGR4J", "dPLGR4JNet", root / "static.pt", x, z)
-        check_pair("dPLGR4Jd", "dPLGR4JNetd", root / "dynamic.pt", x, z)
+        check_pair("dPLGR4JStatic", "dPLGR4JStaticWithMLP", root / "static.pt", x, z)
+        check_pair("dPLGR4JDynamic", "dPLGR4JDynamicWithMLP", root / "dynamic.pt", x, z)
+        assert canonical_model_name("dPLGR4J") == "dPLGR4JStatic"
+        assert canonical_model_name("dPLGR4JNet") == "dPLGR4JStaticWithMLP"
+        assert canonical_model_name("dPLGR4Jd") == "dPLGR4JDynamic"
+        assert canonical_model_name("dPLGR4JNetd") == "dPLGR4JDynamicWithMLP"
 
 
 if __name__ == "__main__":
